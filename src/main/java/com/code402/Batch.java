@@ -8,6 +8,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 class Batch {
+  static boolean USE_SSL = false;
   static int NUM_RECORDS = 1000 * 1000;
   static int NUM_CORES = 1;
   static LongAdder records = new LongAdder();
@@ -19,9 +20,13 @@ class Batch {
     if(System.getenv("NUM_RECORDS") != null)
       NUM_RECORDS = Integer.parseInt(System.getenv("NUM_RECORDS"));
 
+    USE_SSL = System.getenv("USE_SSL") != null;
+
     if(System.getenv("NUM_CORES") != null)
       NUM_CORES = Integer.parseInt(System.getenv("NUM_CORES"));
   }
+
+  static long startTime = System.currentTimeMillis();
 
   static String[] getWarcUrls(String warcsUrl, int howMany) throws Exception {
     InputStream is = getStream(warcsUrl);
@@ -42,7 +47,7 @@ class Batch {
       try {
         System.out.println(url);
 
-        InputStream warcIs = getStream("http://commoncrawl.s3.amazonaws.com/" + url);
+        InputStream warcIs = getStream("http" + (USE_SSL ? "s" : "") + "://commoncrawl.s3.amazonaws.com/" + url);
         WarcReader reader = new WarcReader(warcIs);
         for(WarcRecord record : reader) {
           if(record instanceof WarcResponse) {
@@ -64,8 +69,22 @@ class Batch {
   public static void main(String[] args) throws Exception {
     CountDownLatch latch = new CountDownLatch(NUM_CORES);
 
+    Thread printer = new Thread() {
+      public void run() {
+        while(true) {
+          try {
+            Thread.sleep(1000);
+          } catch (InterruptedException ie) {
+          }
+          printRate();
+        }
+      }
+    };
+
+    printer.start();
+
     String[] urls = getWarcUrls(
-      "https://commoncrawl.s3.amazonaws.com/crawl-data/CC-MAIN-2019-30/warc.paths.gz",
+      "http" + (USE_SSL ? "s" : "") + "://commoncrawl.s3.amazonaws.com/crawl-data/CC-MAIN-2019-30/warc.paths.gz",
       NUM_CORES
     );
 
@@ -80,8 +99,12 @@ class Batch {
 
     latch.await();
 
-    long elapsed = System.currentTimeMillis() - start;
-    System.out.println("Read " + records.sum() + " records in " + elapsed + "ms, " + (records.doubleValue() / (elapsed / 1000.0)) + " records/sec.");
+    printRate();
     System.exit(0);
+  }
+
+  static void printRate() {
+    long elapsed = System.currentTimeMillis() - startTime;
+    System.out.println("Read " + records.sum() + " records in " + elapsed + "ms, " + (records.doubleValue() / (elapsed / 1000.0)) + " records/sec.");
   }
 }

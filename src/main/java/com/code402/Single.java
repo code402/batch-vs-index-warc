@@ -12,6 +12,7 @@ import com.fasterxml.jackson.core.type.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 class Single {
+  static boolean USE_SSL = false;
   static int NUM_RECORDS = 1000 * 1000;
   static int NUM_CORES = 1;
   static int NUM_DOWNLOAD_THREADS = 100;
@@ -31,13 +32,16 @@ class Single {
     if(System.getenv("NUM_CORES") != null)
       NUM_CORES = Integer.parseInt(System.getenv("NUM_CORES"));
 
+    USE_SSL = System.getenv("USE_SSL") != null;
+
     if(System.getenv("NUM_DOWNLOAD_THREADS") != null)
       NUM_DOWNLOAD_THREADS = Integer.parseInt(System.getenv("NUM_DOWNLOAD_THREADS"));
   }
 
+  static long startTime = System.currentTimeMillis();
+
   static ThreadPoolExecutor downloadPool =
       new ThreadPoolExecutor(NUM_DOWNLOAD_THREADS, NUM_DOWNLOAD_THREADS, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(125000));
-
 
   static String[] getCdxUrls(String warcsUrl, int howMany) throws Exception {
     InputStream is = getStream(warcsUrl);
@@ -67,18 +71,20 @@ class Single {
     }
 
     public byte[] call() {
-      try {
-        byte[] rv = new byte[length];
-        int start = 0;
-        HttpURLConnection conn = (HttpURLConnection)(new URL(url).openConnection());
-        conn.setConnectTimeout(5000);
-        conn.setReadTimeout(5000);
-        String range = "bytes=" + offset + "-" + (offset + length - 1);
-        conn.setRequestProperty("Range", range);
+      int attempts = 5;
+      while(attempts > 0) {
+        attempts--;
 
-        InputStream is = null;
         try {
-          is = conn.getInputStream();
+          byte[] rv = new byte[length];
+          int start = 0;
+          HttpURLConnection conn = (HttpURLConnection)(new URL(url).openConnection());
+          conn.setConnectTimeout(5000);
+          conn.setReadTimeout(5000);
+          String range = "bytes=" + offset + "-" + (offset + length - 1);
+          conn.setRequestProperty("Range", range);
+
+          InputStream is = conn.getInputStream();
           boolean go = true;
           while(go) {
             int read = is.read(rv, start, rv.length - start);
@@ -96,14 +102,12 @@ class Single {
 
           return rv;
         } catch (Exception e) {
-          e.printStackTrace();
-          System.exit(1);
+          System.out.println(e.getMessage());
         }
-      } catch (Exception e) {
-        e.printStackTrace();
-        System.exit(1);
       }
 
+      System.out.println("failed to fetch entry");
+      System.exit(1);
       return null;
     }
   }
@@ -121,7 +125,7 @@ class Single {
         System.out.println(url);
 
         // Read the CDX entries.
-        InputStream cdxIs = getStream("http://commoncrawl.s3.amazonaws.com/" + url);
+        InputStream cdxIs = getStream("http" + (USE_SSL ? "s" : "") + "://commoncrawl.s3.amazonaws.com/" + url);
         BufferedReader cdxLines = new BufferedReader(new InputStreamReader(cdxIs));
 
         Vector<Future<byte[]>> bytesFutures = new Vector<Future<byte[]>>();
@@ -138,7 +142,7 @@ class Single {
             //System.out.println(entry);
             bytesFutures.add(downloadPool.submit(
                 new ProcessCdxEntry(
-                  "http://commoncrawl.s3.amazonaws.com/" + entry.get("filename").toString(),
+                  "http" + (USE_SSL ? "s" : "") + "://commoncrawl.s3.amazonaws.com/" + entry.get("filename").toString(),
                   Integer.parseInt(entry.get("offset").toString()),
                   Integer.parseInt(entry.get("length").toString())
                 )
@@ -169,15 +173,27 @@ class Single {
   public static void main(String[] args) throws Exception {
     CountDownLatch latch = new CountDownLatch(NUM_CORES);
 
+    Thread printer = new Thread() {
+      public void run() {
+        while(true) {
+          try {
+            Thread.sleep(1000);
+          } catch (InterruptedException ie) {
+          }
+          printRate();
+        }
+      }
+    };
+
+    printer.start();
+
     String[] urls = getCdxUrls(
-      "https://commoncrawl.s3.amazonaws.com/crawl-data/CC-MAIN-2019-30/cc-index.paths.gz",
+      "http" + (USE_SSL ? "s" : "") + "://commoncrawl.s3.amazonaws.com/crawl-data/CC-MAIN-2019-30/cc-index.paths.gz",
       NUM_CORES
     );
 
     ThreadPoolExecutor pool =
       new ThreadPoolExecutor(NUM_CORES, NUM_CORES, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(100));
-    // Start multiple threads -- can do this later, for now, do it in proc.
-    long start = System.currentTimeMillis();
     for(String url: urls) {
       ProcessCdx pc = new ProcessCdx(url, latch);
       pool.submit(pc);
@@ -185,8 +201,12 @@ class Single {
 
     latch.await();
 
-    long elapsed = System.currentTimeMillis() - start;
-    System.out.println("Read " + records.sum() + " records in " + elapsed + "ms, " + (records.doubleValue() / (elapsed / 1000.0)) + " records/sec.");
+    printRate();
     System.exit(0);
+  }
+
+  static void printRate() {
+    long elapsed = System.currentTimeMillis() - startTime;
+    System.out.println("Read " + records.sum() + " records in " + elapsed + "ms, " + (records.doubleValue() / (elapsed / 1000.0)) + " records/sec.");
   }
 }
