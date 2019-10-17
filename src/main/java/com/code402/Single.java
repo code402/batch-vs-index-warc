@@ -16,6 +16,7 @@ class Single {
   static int NUM_RECORDS = 1000 * 1000;
   static int NUM_CORES = 1;
   static int NUM_DOWNLOAD_THREADS = 100;
+  static int BATCH_SIZE = 1000;
   static LongAdder records = new LongAdder();
   static InputStream getStream(String url) throws Exception {
     return new GzipCompressorInputStream(new URL(url).openStream(), true);
@@ -26,13 +27,16 @@ class Single {
     new TypeReference<HashMap<String, Object>>() {};
 
   static {
+    USE_SSL = System.getenv("USE_SSL") != null;
+
     if(System.getenv("NUM_RECORDS") != null)
       NUM_RECORDS = Integer.parseInt(System.getenv("NUM_RECORDS"));
 
     if(System.getenv("NUM_CORES") != null)
       NUM_CORES = Integer.parseInt(System.getenv("NUM_CORES"));
 
-    USE_SSL = System.getenv("USE_SSL") != null;
+    if(System.getenv("BATCH_SIZE") != null)
+      BATCH_SIZE = Integer.parseInt(System.getenv("BATCH_SIZE"));
 
     if(System.getenv("NUM_DOWNLOAD_THREADS") != null)
       NUM_DOWNLOAD_THREADS = Integer.parseInt(System.getenv("NUM_DOWNLOAD_THREADS"));
@@ -129,10 +133,11 @@ class Single {
         BufferedReader cdxLines = new BufferedReader(new InputStreamReader(cdxIs));
 
         Vector<Future<byte[]>> bytesFutures = new Vector<Future<byte[]>>();
+        byte[] buffer = new byte[2048];
         while(true) {
           bytesFutures.clear();
 
-          for(int i = 0; i < 10; i++) {
+          for(int i = 0; i < BATCH_SIZE; i++) {
             String cdxLine = cdxLines.readLine();
             if(cdxLine == null)
               break;
@@ -155,6 +160,15 @@ class Single {
             WarcRecord record = reader.next().get();
             if(record instanceof WarcResponse) {
               records.increment();
+              // consume the body
+              WarcResponse response = (WarcResponse)record;
+              InputStream is = response.body().stream();
+              while(true) {
+                int read = is.read(buffer);
+                if(read == -1)
+                  break;
+              }
+              is.close();
             }
 
             if(records.sum() > NUM_RECORDS)

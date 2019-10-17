@@ -37,21 +37,30 @@ class Batch {
 
   static class ProcessWarc implements Runnable {
     String url;
-    CountDownLatch latch;
-    ProcessWarc(String url, CountDownLatch latch) {
+    ProcessWarc(String url) {
       this.url = url;
-      this.latch = latch;
     }
 
     public void run() {
       try {
         System.out.println(url);
 
+        byte[] buffer = new byte[2048];
         InputStream warcIs = getStream("http" + (USE_SSL ? "s" : "") + "://commoncrawl.s3.amazonaws.com/" + url);
         WarcReader reader = new WarcReader(warcIs);
         for(WarcRecord record : reader) {
           if(record instanceof WarcResponse) {
             records.increment();
+            //consume the body
+            WarcResponse response = (WarcResponse)record;
+            InputStream is = response.body().stream();
+            while(true) {
+              int read = is.read(buffer);
+              if(read == -1)
+                break;
+            }
+            is.close();
+
           }
 
           if(records.sum() > NUM_RECORDS)
@@ -60,15 +69,11 @@ class Batch {
       } catch(Exception e) {
         e.printStackTrace();
         System.exit(1);
-      } finally {
-        latch.countDown();
       }
     }
   }
 
   public static void main(String[] args) throws Exception {
-    CountDownLatch latch = new CountDownLatch(NUM_CORES);
-
     Thread printer = new Thread() {
       public void run() {
         while(true) {
@@ -85,7 +90,7 @@ class Batch {
 
     String[] urls = getWarcUrls(
       "http" + (USE_SSL ? "s" : "") + "://commoncrawl.s3.amazonaws.com/crawl-data/CC-MAIN-2019-30/warc.paths.gz",
-      NUM_CORES
+      4 * NUM_CORES
     );
 
     ThreadPoolExecutor pool =
@@ -93,12 +98,12 @@ class Batch {
     // Start multiple threads -- can do this later, for now, do it in proc.
     long start = System.currentTimeMillis();
     for(String url: urls) {
-      ProcessWarc pw = new ProcessWarc(url, latch);
+      ProcessWarc pw = new ProcessWarc(url);
       pool.submit(pw);
     }
 
-    latch.await();
 
+    Thread.sleep(65000);
     printRate();
     System.exit(0);
   }
