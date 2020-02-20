@@ -1,5 +1,7 @@
 # batch-vs-index-warc
 
+_See the blog post: [S3 Throughput: Scans vs Indexes](https://code402.com/blog/s3-scans-vs-index/)._
+
 A benchmark to explore the speed of reading WARC entries in bulk vs individually.
 
 ```bash
